@@ -10,8 +10,10 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 
 ### Pilares da Arquitetura
 * **Custo Zero (100% Gratuito):** Utiliza tiers gratuitos de APIs de inferência em nuvem combinados com processamento local leve de áudio.
-* **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API (Google Gemini / Groq), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
+* **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API (Google Gemini `3.8-flash` / Groq), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
+* **Resiliência e Tolerância a Falhas:** Comunicação com APIs protegida por *Retry com Exponential Backoff*, gerenciamento explícito de histórico com *rollback* e tratamento de exceções integrado à personalidade.
 * **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas.
+* **Saída Otimizada para Voz (Voice-Ready):** O pipeline de prompts remove formatações visuais (Markdown) na origem para garantir leitura natural e sem ruídos pelo sintetizador neural.
 
 ---
 
@@ -24,7 +26,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 [1. STT Local (Faster-Whisper INT8)] ──► Transcrição rápida em CPU
           │
           ▼
-[2. Cérebro (LLM + System Prompt + Histórico)]
+[2. Cérebro (LLM + Retry/Backoff + Memória)]
           │
           ├──► (Apenas diálogo) ──────────────────────────┐
           │                                                │
@@ -52,7 +54,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 | Camada | Tecnologia | Papel no Sistema |
 | :--- | :--- | :--- |
 | **Linguagem** | Python 3.12 | Orquestração geral, assincronismo e integração com o SO. |
-| **Cérebro (LLM)** | Google Gemini API / Groq | Processamento de linguagem natural, memória contextual e *Tool Calling*. |
+| **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`) / Groq | Processamento de linguagem natural, memória contextual e *Tool Calling*. |
 | **Ouvidos (STT)** | Faster-Whisper (`int8`) | Reconhecimento de fala local otimizado para CPU, sem limites de requisição. |
 | **Voz (TTS)** | Edge-TTS | Síntese de voz neural em português (`pt-BR-AntonioNeural`) sem necessidade de chave de API. |
 | **Telemetria & SO** | `psutil`, `subprocess`, `pynput` | Monitoramento de CPU/RAM/Disco, controle de aplicativos e atalhos globais. |
@@ -77,6 +79,8 @@ Jarvis/
 ├── .gitignore               # Bloqueio de credenciais (.env), venv e arquivos temporários
 ├── requirements.txt         # Dependências fixadas do projeto
 ├── README.md                # Documentação técnica e guia de instalação
+├── docs/
+│   └── TROUBLESHOOTING.md   # Diário de incidentes, causa raiz e resoluções técnicas
 ├── config/
 │   ├── permissions.json     # Whitelist de aplicativos e diretórios permitidos
 │   └── personality.yaml     # Diretrizes de tom, comportamento e identidade do assistente
@@ -84,7 +88,7 @@ Jarvis/
     ├── __init__.py
     ├── main.py              # Loop principal e orquestração dos módulos
     ├── brain/
-    │   ├── llm_client.py    # Adaptador de comunicação com Gemini/Groq e histórico
+    │   ├── llm_client.py    # Adaptador Gemini/Groq, retry exponencial e memória
     │   └── prompt.py        # Carregamento dinâmico da personalidade
     ├── voice/
     │   ├── listener.py      # Captura de microfone e transcrição STT
@@ -140,6 +144,12 @@ python -m src.main
 ## 🗺️ Roadmap de Desenvolvimento
 
 - [x] **Fase 1:** Estruturação modular do repositório, isolamento de ambiente e segurança de credenciais.
-- [ ] **Fase 2:** Implementação do núcleo conversacional (`brain`) com personalidade customizável e memória de sessão.
+- [x] **Fase 2:** Implementação do núcleo conversacional (`brain`) com personalidade customizável, memória de sessão, retry exponencial e diário de troubleshooting.
 - [ ] **Fase 3:** Criação das ferramentas de telemetria de hardware e executor controlado via `permissions.json`.
 - [ ] **Fase 4:** Integração da pipeline de áudio bidirecional (STT com Whisper + TTS com Edge-TTS) e atalho global.
+
+---
+
+## 📚 Documentação Complementar
+
+* [Diário de Engenharia & Troubleshooting](docs/TROUBLESHOOTING.md) — Registro detalhado dos desafios técnicos enfrentados durante a construção e suas respectivas soluções.
