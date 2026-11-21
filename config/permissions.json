@@ -1,0 +1,39 @@
+{
+  "allowed_apps": {
+    "vscode": {
+      "command": "code",
+      "type": "app",
+      "description": "Visual Studio Code (Editor de código)"
+    },
+    "bloco_de_notas": {
+      "command": "notepad.exe",
+      "type": "app",
+      "description": "Bloco de Notas do Windows"
+    },
+    "calculadora": {
+      "command": "calc.exe",
+      "type": "app",
+      "description": "Calculadora do Windows"
+    },
+    "explorador": {
+      "command": "explorer.exe",
+      "type": "app",
+      "description": "Explorador de Arquivos do Windows"
+    },
+    "navegador": {
+      "command": "https://www.google.com",
+      "type": "url",
+      "description": "Navegador web padrão"
+    },
+    "github": {
+      "command": "https://github.com/exppedito",
+      "type": "url",
+      "description": "Perfil do GitHub"
+    },
+    "youtube": {
+      "command": "https://www.youtube.com",
+      "type": "url",
+      "description": "YouTube"
+    }
+  }
+}

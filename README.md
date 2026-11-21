@@ -10,9 +10,9 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 
 ### Pilares da Arquitetura
 * **Custo Zero (100% Gratuito):** Utiliza tiers gratuitos de APIs de inferência em nuvem combinados com processamento local leve de áudio.
-* **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API (Google Gemini `3.8-flash` / Groq), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
-* **Resiliência e Tolerância a Falhas:** Comunicação com APIs protegida por *Retry com Exponential Backoff*, gerenciamento explícito de histórico com *rollback* e tratamento de exceções integrado à personalidade.
-* **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas.
+* **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API, mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
+* **Alta Disponibilidade Multi-Provider (Failover Automático):** Comunicação protegida por *Retry com Exponential Backoff*, gerenciamento explícito de histórico com *rollback* e alternância automática entre provedores (`Google Gemini` $\rightarrow$ `Groq` com descoberta dinâmica de modelos ativos) em caso de esgotamento de cota (`429`) ou instabilidade (`503`).
+* **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas (`config/permissions.json`) com invocação de processos via `shell=False`.
 * **Saída Otimizada para Voz (Voice-Ready):** O pipeline de prompts remove formatações visuais (Markdown) na origem para garantir leitura natural e sem ruídos pelo sintetizador neural.
 
 ---
@@ -26,7 +26,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 [1. STT Local (Faster-Whisper INT8)] ──► Transcrição rápida em CPU
           │
           ▼
-[2. Cérebro (LLM + Retry/Backoff + Memória)]
+[2. Cérebro (Gemini ──(429 Fallback)──► Groq Dinâmico + Memória)]
           │
           ├──► (Apenas diálogo) ──────────────────────────┐
           │                                                │
@@ -54,7 +54,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 | Camada | Tecnologia | Papel no Sistema |
 | :--- | :--- | :--- |
 | **Linguagem** | Python 3.12 | Orquestração geral, assincronismo e integração com o SO. |
-| **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`) / Groq | Processamento de linguagem natural, memória contextual e *Tool Calling*. |
+| **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`) + Groq (Failover dinâmico) | Processamento de linguagem natural, memória contextual, *Function Calling* e contingência automática. |
 | **Ouvidos (STT)** | Faster-Whisper (`int8`) | Reconhecimento de fala local otimizado para CPU, sem limites de requisição. |
 | **Voz (TTS)** | Edge-TTS | Síntese de voz neural em português (`pt-BR-AntonioNeural`) sem necessidade de chave de API. |
 | **Telemetria & SO** | `psutil`, `subprocess`, `pynput` | Monitoramento de CPU/RAM/Disco, controle de aplicativos e atalhos globais. |
@@ -66,8 +66,8 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 
 Para mitigar riscos de execução indevida por alucinação do modelo, o assistente opera sob o princípio do **menor privilégio**:
 1. O LLM recebe apenas as assinaturas das ferramentas registradas em `src/tools/registry.py`.
-2. Quando o usuário solicita uma ação (ex: *"Abrir o VS Code"*), o modelo retorna apenas uma intenção estruturada em JSON.
-3. O módulo `app_launcher.py` valida se o alvo existe dentro do arquivo `config/permissions.json` antes de invocar qualquer processo do sistema operacional.
+2. Quando o usuário solicita uma ação (ex: *"Abrir a calculadora"* ou *"Abrir o editor de registros"*), o modelo retorna apenas uma intenção estruturada em JSON.
+3. O módulo `app_launcher.py` valida se o alvo existe dentro do arquivo `config/permissions.json` e invoca o binário resolvido sem interpretador de shell (`shell=False`). Caso o alvo não esteja autorizado, a execução é bloqueada e o assistente informa os itens permitidos.
 
 ---
 
@@ -88,15 +88,16 @@ Jarvis/
     ├── __init__.py
     ├── main.py              # Loop principal e orquestração dos módulos
     ├── brain/
-    │   ├── llm_client.py    # Adaptador Gemini/Groq, retry exponencial e memória
+    │   ├── llm_client.py    # Adaptador Gemini/Groq, failover dinâmico, tool calling e memória
     │   └── prompt.py        # Carregamento dinâmico da personalidade
     ├── voice/
     │   ├── listener.py      # Captura de microfone e transcrição STT
     │   └── speaker.py       # Síntese e reprodução de áudio TTS
     └── tools/
-        ├── registry.py      # Definição das ferramentas expostas ao LLM
-        ├── system_info.py   # Leitura de telemetria de hardware (CPU, RAM, Disco)
-        └── app_launcher.py  # Executor controlado por whitelist
+        ├── __init__.py
+        ├── registry.py      # Definição e despacho seguro das ferramentas expostas ao LLM
+        ├── system_info.py   # Leitura de telemetria de hardware (CPU, RAM, Disco, Uptime)
+        └── app_launcher.py  # Executor controlado por whitelist (shell=False)
 ```
 
 ---
@@ -106,7 +107,7 @@ Jarvis/
 ### 1. Pré-requisitos
 * **Python 3.11+** instalado e adicionado ao `PATH`.
 * **FFmpeg** instalado no sistema operacional (necessário para manipulação de áudio).
-* Uma chave de API gratuita do [Google AI Studio](https://aistudio.google.com/) (ou [Groq Cloud](https://console.groq.com/)).
+* Uma chave de API gratuita do [Google AI Studio](https://aistudio.google.com/) e/ou [Groq Cloud](https://console.groq.com/).
 
 ### 2. Instalação
 ```bash
@@ -123,7 +124,7 @@ pip install -r requirements.txt
 ```
 
 ### 3. Configuração das Variáveis de Ambiente
-Copie o arquivo de exemplo e insira sua chave de API:
+Copie o arquivo de exemplo e insira suas chaves de API:
 ```bash
 cp .env.example .env
 ```
@@ -131,6 +132,7 @@ Edite o arquivo `.env` com suas credenciais:
 ```env
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=sua_chave_aqui
+GROQ_API_KEY=sua_chave_opcional_de_fallback_aqui
 TTS_VOICE=pt-BR-AntonioNeural
 ```
 
@@ -145,7 +147,7 @@ python -m src.main
 
 - [x] **Fase 1:** Estruturação modular do repositório, isolamento de ambiente e segurança de credenciais.
 - [x] **Fase 2:** Implementação do núcleo conversacional (`brain`) com personalidade customizável, memória de sessão, retry exponencial e diário de troubleshooting.
-- [ ] **Fase 3:** Criação das ferramentas de telemetria de hardware e executor controlado via `permissions.json`.
+- [x] **Fase 3:** Criação das ferramentas de telemetria de hardware (`psutil`), executor controlado via `permissions.json` (`shell=False`), failover dinâmico (`Gemini -> Groq`) e loop agêntico de *Function Calling*.
 - [ ] **Fase 4:** Integração da pipeline de áudio bidirecional (STT com Whisper + TTS com Edge-TTS) e atalho global.
 
 ---
