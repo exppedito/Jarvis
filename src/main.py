@@ -1,6 +1,7 @@
 import sys
 from dotenv import load_dotenv
 from src.brain.llm_client import JarvisBrain
+from src.tools.monitor import stop_background_monitor
 from src.voice.listener import JarvisListener
 from src.voice.speaker import JarvisSpeaker
 
@@ -79,6 +80,7 @@ def main():
     except KeyboardInterrupt:
         print("\nJ.A.R.V.I.S.: Interrupção detectada. Desligando.")
     finally:
+        stop_background_monitor()
         if speaker:
             speaker.close()
         jarvis.close()

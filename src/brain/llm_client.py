@@ -7,6 +7,7 @@ from groq import Groq
 from src.brain.prompt import load_system_prompt
 from src.tools.registry import AVAILABLE_TOOLS, execute_tool
 from src.utils.logger import get_logger
+from src.utils.metrics import record_llm_call, set_initial_provider
 
 logger = get_logger("jarvis.brain")
 
@@ -41,6 +42,42 @@ GROQ_TOOLS_SCHEMA = [
         "function": {
             "name": "list_allowed_applications",
             "description": "Lista todos os aplicativos e links que o J.A.R.V.I.S. tem permissão para abrir.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "start_background_monitor",
+            "description": "Inicia o monitoramento autônomo de CPU, RAM e processos em segundo plano por X minutos sem travar o assistente.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "duration_minutes": {
+                        "type": "integer",
+                        "description": "Duração total do monitoramento em minutos (entre 1 e 30; padrão 5).",
+                    },
+                    "interval_seconds": {
+                        "type": "integer",
+                        "description": "Intervalo entre amostras em segundos (entre 2 e 60; padrão 5).",
+                    },
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_monitoring_report",
+            "description": "Retorna o relatório consolidado com médias, picos, quedas, processos ofensores e recomendações do monitoramento em background.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "get_jarvis_health",
+            "description": "Retorna a telemetria interna de saúde operacional do próprio J.A.R.V.I.S. (uso de RAM/CPU do processo, latência das APIs, provedor ativo e fallbacks).",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -118,6 +155,8 @@ class JarvisBrain:
         if self.provider not in {"gemini", "groq"}:
             raise ValueError(f"Provedor '{self.provider}' não suportado. Use 'gemini' ou 'groq'.")
 
+        initial_model = self.gemini_model if self.provider == "gemini" else self.groq_model
+        set_initial_provider(self.provider, initial_model)
         logger.info("JarvisBrain inicializado (provedor=%s, groq_model=%s)", self.provider, self.groq_model or "N/A")
 
     def _call_with_retry(self, func, max_retries: int = 3):
@@ -291,11 +330,15 @@ class JarvisBrain:
             raise
 
     def think(self, user_input: str) -> str:
-        """Processa a entrada do usuário, acionando fallback e registrando exceções em arquivo de log."""
+        """Processa a entrada do usuário, acionando fallback e registrando métricas de latência e saúde."""
+        start_time = time.perf_counter()
         try:
             if self.provider == "gemini":
                 try:
-                    return self._think_gemini(user_input)
+                    reply = self._think_gemini(user_input)
+                    latency_ms = (time.perf_counter() - start_time) * 1000
+                    record_llm_call("gemini", self.gemini_model, latency_ms, used_fallback=False, failed=False)
+                    return reply
                 except Exception as e:
                     should_fallback = any(
                         code in str(e) for code in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
@@ -303,12 +346,20 @@ class JarvisBrain:
                     if should_fallback and self.groq_client:
                         logger.warning("Failover acionado (Gemini -> Groq/%s): %s", self.groq_model, e)
                         print(f"  [SISTEMA -> FALLBACK]: Alternando para Groq ({self.groq_model})...")
-                        return self._think_groq(user_input)
+                        reply = self._think_groq(user_input)
+                        latency_ms = (time.perf_counter() - start_time) * 1000
+                        record_llm_call("groq", self.groq_model, latency_ms, used_fallback=True, failed=False)
+                        return reply
                     raise
 
-            return self._think_groq(user_input)
+            reply = self._think_groq(user_input)
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            record_llm_call("groq", self.groq_model, latency_ms, used_fallback=False, failed=False)
+            return reply
 
         except Exception as e:
+            latency_ms = (time.perf_counter() - start_time) * 1000
+            record_llm_call(self.provider, "error", latency_ms, used_fallback=False, failed=True)
             logger.error("Falha na comunicação neural (provedor=%s): %s", self.provider, e, exc_info=True)
             return self._format_clean_error(e)
 

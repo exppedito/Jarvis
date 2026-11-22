@@ -1,11 +1,19 @@
 from src.tools.system_info import get_system_telemetry
 from src.tools.app_launcher import open_application, list_allowed_applications
+from src.tools.monitor import (
+    start_background_monitor,
+    get_monitoring_report,
+    get_jarvis_health,
+)
 
 # Lista de funções expostas ao modelo de linguagem
 AVAILABLE_TOOLS = [
     get_system_telemetry,
     open_application,
     list_allowed_applications,
+    start_background_monitor,
+    get_monitoring_report,
+    get_jarvis_health,
 ]
 
 # Mapa rápido para invocação segura pelo nome

@@ -73,3 +73,21 @@ Registro cronológico dos incidentes técnicos encontrados durante o desenvolvim
 * **Por que aconteceu (Causa Raiz):** O recurso *Bracketed Paste Mode* do terminal envolve blocos colados com as sequências de escape ANSI `\e[200~` (início) e `\e[201~` (fim). Sob colagens grandes de múltiplas linhas no ConPTY do Windows, o buffer descartou o byte `ESC` (`\e`) inicial, injetando `[200~` literalmente antes do comando `cat`.
 * **Como foi sanado:** Desativamos o *Bracketed Paste* na sessão do shell (`bind 'set enable-bracketed-paste off'`) antes de reescrever o arquivo via *heredoc*.
 * **Validação e Justificativa Técnica:** Após desabilitar a sequência de controle de colagem, `src/brain/llm_client.py` foi gravado integralmente, validado em execução com `python -m src.main` e comprovado pela gravação limpa de eventos, retries e failovers em `logs/jarvis.log`.
+
+---
+
+## Incidente 09 — Módulo Não Encontrado na Importação (`ModuleNotFoundError: No module named 'src.tools.monitor'`)
+
+* **O Problema:** Ao iniciar o assistente (`python -m src.main`) após atualizar `src/tools/registry.py`, a execução falhou imediatamente com `ModuleNotFoundError: No module named 'src.tools.monitor'`.
+* **Por que aconteceu (Causa Raiz):** Durante a criação em lote dos arquivos da Side-Task 02 no terminal Git Bash, o bloco *heredoc* de `src/tools/monitor.py` foi descartado na colagem multi-linha, deixando `registry.py` apontando para um módulo inexistente no disco.
+* **Como foi sanado:** Reativamos o ambiente virtual (`source venv/Scripts/activate`), desabilitamos o *Bracketed Paste* (`bind 'set enable-bracketed-paste off'`), gravamos `src/tools/monitor.py` integralmente e validamos sua existência com `ls -lh`.
+* **Validação e Justificativa Técnica:** Nos testes em seguida, o J.A.R.V.I.S. iniciou uma coleta autônoma de 1 minuto (12 amostras a cada 5s) em *daemon thread*, respondeu perguntas em paralelo sem bloqueio e consolidou o relatório completo de picos, médias e processos ofensores.
+
+---
+
+## Incidente 09 — Módulo Não Encontrado na Importação (`ModuleNotFoundError: No module named 'src.tools.monitor'`)
+
+* **O Problema:** Ao iniciar o assistente (`python -m src.main`) após atualizar `src/tools/registry.py`, a execução falhou imediatamente com `ModuleNotFoundError: No module named 'src.tools.monitor'`.
+* **Por que aconteceu (Causa Raiz):** Durante a criação em lote dos arquivos da Side-Task 02 no terminal Git Bash, o bloco *heredoc* de `src/tools/monitor.py` foi descartado na colagem multi-linha, deixando `registry.py` apontando para um módulo inexistente no disco.
+* **Como foi sanado:** Reativamos o ambiente virtual (`source venv/Scripts/activate`), desabilitamos o *Bracketed Paste* (`bind 'set enable-bracketed-paste off'`), gravamos `src/tools/monitor.py` integralmente e validamos sua existência com `ls -lh`.
+* **Validação e Justificativa Técnica:** Nos testes em seguida, o J.A.R.V.I.S. iniciou uma coleta autônoma de 1 minuto (12 amostras a cada 5s) em *daemon thread*, respondeu perguntas em paralelo sem bloqueio e consolidou o relatório completo de picos, médias e processos ofensores.

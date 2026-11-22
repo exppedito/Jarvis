@@ -6,14 +6,14 @@ Assistente pessoal modular desenvolvido em **Python**, inspirado no J.A.R.V.I.S.
 
 ## 🎯 Objetivo do Projeto
 
-Construir um assistente de voz e texto fluido, dotado de personalidade própria e capaz de interagir com o computador do usuário (telemetria de hardware, abertura de aplicativos autorizados e automação de rotinas) sem expor o sistema a execuções arbitrárias de comandos.
+Construir um assistente de voz e texto fluido, dotado de personalidade própria e capaz de interagir com o computador do usuário (telemetria de hardware, monitoramento autônomo, abertura de aplicativos autorizados e automação de rotinas) sem expor o sistema a execuções arbitrárias de comandos.
 
 ### Pilares da Arquitetura
 * **Custo Zero (100% Gratuito):** Utiliza tiers gratuitos de APIs de inferência em nuvem combinados com processamento local leve de áudio.
 * **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API, enquanto a transcrição de voz roda localmente em CPU (`Faster-Whisper INT8` em memória), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
 * **Alta Disponibilidade Multi-Provider (Failover Automático):** Comunicação protegida por *Retry com Exponential Backoff*, gerenciamento explícito de histórico com *rollback* e alternância automática entre provedores (`Google Gemini` $\rightarrow$ `Groq` com descoberta dinâmica de modelos ativos) em caso de esgotamento de cota (`429`) ou sobrecarga (`503`).
 * **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas (`config/permissions.json`) com invocação de processos via `shell=False`.
-* **Observabilidade & Saída Voice-Ready:** Rastreamentos técnicos e *stack traces* são isolados em log rotativo (`logs/jarvis.log`), enquanto as respostas passam por sanitização para entregar apenas texto limpo ao sintetizador neural.
+* **Observabilidade, Self-Health & Saída Voice-Ready:** Rastreamentos técnicos são isolados em log rotativo (`logs/jarvis.log`), o assistente monitora sua própria saúde operacional e executa coletas de telemetria em segundo plano sem bloquear a interação.
 
 ---
 
@@ -28,7 +28,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
           ▼
 [2. Cérebro (Gemini ──(429/503 Fallback)──► Groq Dinâmico + Memória)]
           │                                         │
-          ├──► (Apenas diálogo) ────────────────────┼──► [logs/jarvis.log]
+          ├──► (Apenas diálogo) ────────────────────┼──► [logs/jarvis.log + Metrics]
           │                                         │
           └──► (Intenção de ação via Function Calling)
                     │
@@ -36,7 +36,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
           [3. Camada de Segurança (permissions.json)]
                     │
                     ▼
-          [4. Execução Isolada (Tools Python)]
+          [4. Execução Isolada (Tools + Monitor Daemon)]
                     │
                     ▼
           [Retorno estruturado para o LLM] ─────────┐
@@ -57,8 +57,8 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 | **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`) + Groq (Failover dinâmico) | Processamento de linguagem natural, memória contextual, *Function Calling* e contingência automática. |
 | **Ouvidos (STT)** | Faster-Whisper (`int8`) + `sounddevice` + `numpy` | Captura de microfone e transcrição local em CPU direto da RAM (*Zero-Disk I/O*) com filtro VAD. |
 | **Voz (TTS)** | Edge-TTS + `pygame` | Síntese de voz neural em português (`pt-BR-AntonioNeural`) e reprodução local sem chave de API. |
-| **Telemetria & SO** | `psutil`, `subprocess` | Monitoramento de CPU/RAM/Disco/Uptime e controle seguro de aplicativos. |
-| **Observabilidade & Config** | `logging` (RotatingFileHandler), `python-dotenv`, `PyYAML`, JSON | Isolamento de logs técnicos, credenciais, personalidade e regras de permissão. |
+| **Telemetria & Monitoramento** | `psutil`, `threading`, `subprocess` | Telemetria instantânea, daemon de monitoramento em background, *self-health* e launcher seguro. |
+| **Observabilidade & Config** | `logging` (RotatingFileHandler), `python-dotenv`, `PyYAML`, JSON | Isolamento de logs técnicos, métricas internas, credenciais, personalidade e regras de permissão. |
 
 ---
 
@@ -92,7 +92,8 @@ Jarvis/
     │   └── prompt.py        # Carregamento dinâmico da personalidade
     ├── utils/
     │   ├── __init__.py
-    │   └── logger.py        # Logger rotativo em arquivo (logs/jarvis.log)
+    │   ├── logger.py        # Logger rotativo em arquivo (logs/jarvis.log)
+    │   └── metrics.py       # Rastreador de latência, uptime e failovers do assistente
     ├── voice/
     │   ├── __init__.py
     │   ├── listener.py      # Captura de microfone e transcrição STT em RAM (Faster-Whisper)
@@ -100,7 +101,8 @@ Jarvis/
     └── tools/
         ├── __init__.py
         ├── registry.py      # Definição e despacho seguro das ferramentas expostas ao LLM
-        ├── system_info.py   # Leitura de telemetria de hardware (CPU, RAM, Disco, Uptime)
+        ├── system_info.py   # Leitura instantânea de telemetria de hardware (CPU, RAM, Disco)
+        ├── monitor.py       # Daemon de monitoramento contínuo em background e self-health
         └── app_launcher.py  # Executor controlado por whitelist (shell=False)
 ```
 
@@ -156,6 +158,7 @@ python -m src.main
 - [x] **Fase 3:** Criação das ferramentas de telemetria de hardware (`psutil`), executor controlado via `permissions.json` (`shell=False`), failover dinâmico (`Gemini -> Groq`) e loop agêntico de *Function Calling*.
 - [x] **Fase 4:** Integração da pipeline de áudio bidirecional (STT local em RAM com Faster-Whisper + TTS neural com Edge-TTS) em modo híbrido voz/texto.
 - [x] **Side-Task 01:** Isolamento de stack traces em log rotativo (`logs/jarvis.log`) e sanitização de mensagens de erro na interface.
+- [x] **Side-Task 02:** Monitoramento autônomo em segundo plano (picos, quedas e processos ofensores) e telemetria interna (*self-health*) do assistente.
 
 ---
 
