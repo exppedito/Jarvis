@@ -13,7 +13,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 * **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API, enquanto a transcrição de voz roda localmente em CPU (`Faster-Whisper INT8` em memória), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
 * **Alta Disponibilidade Multi-Provider (Failover Automático):** Comunicação protegida por *Retry com Exponential Backoff*, gerenciamento explícito de histórico com *rollback* e alternância automática entre provedores (`Google Gemini` $\rightarrow$ `Groq` com descoberta dinâmica de modelos ativos) em caso de esgotamento de cota (`429`) ou sobrecarga (`503`).
 * **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas (`config/permissions.json`) com invocação de processos via `shell=False`.
-* **Saída Otimizada para Voz (Voice-Ready):** O pipeline de prompts remove formatações visuais (Markdown) na origem para garantir leitura natural e sem ruídos pelo sintetizador neural.
+* **Observabilidade & Saída Voice-Ready:** Rastreamentos técnicos e *stack traces* são isolados em log rotativo (`logs/jarvis.log`), enquanto as respostas passam por sanitização para entregar apenas texto limpo ao sintetizador neural.
 
 ---
 
@@ -27,24 +27,24 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
           │
           ▼
 [2. Cérebro (Gemini ──(429/503 Fallback)──► Groq Dinâmico + Memória)]
-          │
-          ├──► (Apenas diálogo) ──────────────────────────┐
-          │                                                │
-          └──► (Intenção de ação via Function Calling)     │
-                    │                                      │
-                    ▼                                      │
-          [3. Camada de Segurança (permissions.json)]      │
-                    │                                      │
-                    ▼                                      │
-          [4. Execução Isolada (Tools Python)]             │
-                    │                                      │
-                    ▼                                      │
-          [Retorno estruturado para o LLM] ────────────────┤
-                                                           ▼
-                                            [5. TTS Neural (Edge-TTS + Pygame)]
-                                                           │
-                                                           ▼
-                                               [Resposta em Áudio/Texto]
+          │                                         │
+          ├──► (Apenas diálogo) ────────────────────┼──► [logs/jarvis.log]
+          │                                         │
+          └──► (Intenção de ação via Function Calling)
+                    │
+                    ▼
+          [3. Camada de Segurança (permissions.json)]
+                    │
+                    ▼
+          [4. Execução Isolada (Tools Python)]
+                    │
+                    ▼
+          [Retorno estruturado para o LLM] ─────────┐
+                                                    ▼
+                                     [5. TTS Neural (Edge-TTS + Pygame)]
+                                                    │
+                                                    ▼
+                                        [Resposta em Áudio/Texto]
 ```
 
 ---
@@ -58,7 +58,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 | **Ouvidos (STT)** | Faster-Whisper (`int8`) + `sounddevice` + `numpy` | Captura de microfone e transcrição local em CPU direto da RAM (*Zero-Disk I/O*) com filtro VAD. |
 | **Voz (TTS)** | Edge-TTS + `pygame` | Síntese de voz neural em português (`pt-BR-AntonioNeural`) e reprodução local sem chave de API. |
 | **Telemetria & SO** | `psutil`, `subprocess` | Monitoramento de CPU/RAM/Disco/Uptime e controle seguro de aplicativos. |
-| **Configuração** | `python-dotenv`, `PyYAML`, JSON | Isolamento de credenciais, ajuste de personalidade e regras de permissão. |
+| **Observabilidade & Config** | `logging` (RotatingFileHandler), `python-dotenv`, `PyYAML`, JSON | Isolamento de logs técnicos, credenciais, personalidade e regras de permissão. |
 
 ---
 
@@ -76,7 +76,7 @@ Para mitigar riscos de execução indevida por alucinação do modelo, o assiste
 ```text
 Jarvis/
 ├── .env.example             # Modelo das variáveis de ambiente necessárias
-├── .gitignore               # Bloqueio de credenciais (.env), venv e arquivos temporários
+├── .gitignore               # Bloqueio de credenciais (.env), logs/, venv e temporários
 ├── requirements.txt         # Dependências fixadas do projeto
 ├── README.md                # Documentação técnica e guia de instalação
 ├── docs/
@@ -90,6 +90,9 @@ Jarvis/
     ├── brain/
     │   ├── llm_client.py    # Adaptador Gemini/Groq, failover dinâmico, tool calling e memória
     │   └── prompt.py        # Carregamento dinâmico da personalidade
+    ├── utils/
+    │   ├── __init__.py
+    │   └── logger.py        # Logger rotativo em arquivo (logs/jarvis.log)
     ├── voice/
     │   ├── __init__.py
     │   ├── listener.py      # Captura de microfone e transcrição STT em RAM (Faster-Whisper)
@@ -152,6 +155,7 @@ python -m src.main
 - [x] **Fase 2:** Implementação do núcleo conversacional (`brain`) com personalidade customizável, memória de sessão, retry exponencial e diário de troubleshooting.
 - [x] **Fase 3:** Criação das ferramentas de telemetria de hardware (`psutil`), executor controlado via `permissions.json` (`shell=False`), failover dinâmico (`Gemini -> Groq`) e loop agêntico de *Function Calling*.
 - [x] **Fase 4:** Integração da pipeline de áudio bidirecional (STT local em RAM com Faster-Whisper + TTS neural com Edge-TTS) em modo híbrido voz/texto.
+- [x] **Side-Task 01:** Isolamento de stack traces em log rotativo (`logs/jarvis.log`) e sanitização de mensagens de erro na interface.
 
 ---
 

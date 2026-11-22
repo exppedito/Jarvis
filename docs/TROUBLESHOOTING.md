@@ -64,3 +64,12 @@ Registro cronológico dos incidentes técnicos encontrados durante o desenvolvim
 * **Por que aconteceu (Causa Raiz):** O bloco de contingência em `JarvisBrain.think()` verificava apenas códigos de esgotamento de cota (`429` / `RESOURCE_EXHAUSTED`), não incluindo códigos de indisponibilidade/sobrecarga (`503` / `UNAVAILABLE`) como gatilho de failover.
 * **Como foi sanado:** Expandimos a verificação `should_fallback` em `src/brain/llm_client.py` para acionar o provedor secundário (`Groq`) tanto em erros `429`/`RESOURCE_EXHAUSTED` quanto em erros `503`/`UNAVAILABLE` após as retentativas locais.
 * **Validação e Justificativa Técnica:** Nos testes ponta a ponta por voz, quando o provedor primário apresentou sobrecarga, o sistema comutou automaticamente para o Groq, executou as ferramentas solicitadas e sintetizou a resposta em áudio sem interrupção. Tratar tanto erros de cota quanto de disponibilidade garante resiliência real em arquiteturas multi-provider.
+
+---
+
+## Incidente 08 — Corrupção de Colagem Multi-Linha no Git Bash (`bash: [200~cat: command not found`)
+
+* **O Problema:** Ao colar um bloco extenso de código via *heredoc* (`cat << 'EOF' > src/brain/llm_client.py`) no terminal Git Bash do VS Code, o shell retornou `bash: [200~cat: command not found` e truncou o arquivo de destino.
+* **Por que aconteceu (Causa Raiz):** O recurso *Bracketed Paste Mode* do terminal envolve blocos colados com as sequências de escape ANSI `\e[200~` (início) e `\e[201~` (fim). Sob colagens grandes de múltiplas linhas no ConPTY do Windows, o buffer descartou o byte `ESC` (`\e`) inicial, injetando `[200~` literalmente antes do comando `cat`.
+* **Como foi sanado:** Desativamos o *Bracketed Paste* na sessão do shell (`bind 'set enable-bracketed-paste off'`) antes de reescrever o arquivo via *heredoc*.
+* **Validação e Justificativa Técnica:** Após desabilitar a sequência de controle de colagem, `src/brain/llm_client.py` foi gravado integralmente, validado em execução com `python -m src.main` e comprovado pela gravação limpa de eventos, retries e failovers em `logs/jarvis.log`.

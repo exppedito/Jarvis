@@ -6,6 +6,9 @@ from google.genai import types
 from groq import Groq
 from src.brain.prompt import load_system_prompt
 from src.tools.registry import AVAILABLE_TOOLS, execute_tool
+from src.utils.logger import get_logger
+
+logger = get_logger("jarvis.brain")
 
 GROQ_TOOLS_SCHEMA = [
     {
@@ -90,8 +93,8 @@ class JarvisBrain:
 
             if chat_models:
                 return chat_models[0]
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Falha ao listar modelos ativos no Groq: %s", e)
 
         return "llama-3.1-8b-instant"
 
@@ -115,6 +118,8 @@ class JarvisBrain:
         if self.provider not in {"gemini", "groq"}:
             raise ValueError(f"Provedor '{self.provider}' não suportado. Use 'gemini' ou 'groq'.")
 
+        logger.info("JarvisBrain inicializado (provedor=%s, groq_model=%s)", self.provider, self.groq_model or "N/A")
+
     def _call_with_retry(self, func, max_retries: int = 3):
         """Executa chamadas à API com backoff para falhas transitórias (ignora retry em cota diária esgotada)."""
         delay = 1.5
@@ -127,10 +132,35 @@ class JarvisBrain:
                     raise
                 is_transient = any(code in err_str for code in ("503", "UNAVAILABLE", "429", "RESOURCE_EXHAUSTED"))
                 if is_transient and attempt < max_retries:
+                    logger.warning("Falha transitória na tentativa %d/%d. Nova tentativa em %.1fs.", attempt, max_retries, delay)
                     time.sleep(delay)
                     delay *= 2
                     continue
                 raise
+
+    @staticmethod
+    def _format_clean_error(error: Exception) -> str:
+        """Converte exceções técnicas em respostas curtas e naturais para terminal e TTS."""
+        err_str = str(error)
+
+        if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+            if "PerDay" in err_str:
+                return "Senhor, atingimos o limite diário gratuito da API. Aguarde a renovação da cota ou utilize um provedor alternativo."
+            return "Senhor, atingimos o limite temporário de requisições por minuto. Tente novamente em alguns segundos."
+
+        if "503" in err_str or "UNAVAILABLE" in err_str:
+            return "Senhor, os servidores neurais estão sobrecarregados no momento. Tente novamente em alguns segundos."
+
+        if any(code in err_str for code in ("401", "403", "API_KEY_INVALID", "invalid_api_key", "authentication")):
+            return "Senhor, a chave de autenticação da API foi recusada. Verifique suas credenciais no arquivo de ambiente."
+
+        if any(code in err_str for code in ("404", "NOT_FOUND", "model_not_found")):
+            return "Senhor, o modelo de linguagem configurado não está disponível no servidor."
+
+        if any(code in err_str for code in ("ConnectError", "ConnectionError", "Timeout", "timed out", "getaddrinfo", "NameResolutionError")):
+            return "Senhor, não consegui estabelecer conexão com a rede externa. Verifique o acesso à internet."
+
+        return "Senhor, ocorreu uma falha inesperada na comunicação neural. Os detalhes técnicos foram registrados no log do sistema."
 
     def _think_gemini(self, user_input: str) -> str:
         checkpoint = len(self.gemini_history)
@@ -162,6 +192,7 @@ class JarvisBrain:
                 for fc in response.function_calls:
                     args = dict(fc.args) if fc.args else {}
                     print(f"  [SISTEMA -> TOOL]: executando {fc.name}({json.dumps(args, ensure_ascii=False)})")
+                    logger.info("Tool executada (Gemini): %s(%s)", fc.name, json.dumps(args, ensure_ascii=False))
                     result = execute_tool(fc.name, args)
                     tool_response_parts.append(
                         types.Part.from_function_response(
@@ -230,6 +261,7 @@ class JarvisBrain:
                 for tc in message.tool_calls:
                     args = json.loads(tc.function.arguments or "{}")
                     print(f"  [SISTEMA -> TOOL]: executando {tc.function.name}({json.dumps(args, ensure_ascii=False)})")
+                    logger.info("Tool executada (Groq): %s(%s)", tc.function.name, json.dumps(args, ensure_ascii=False))
                     result = execute_tool(tc.function.name, args)
                     self.groq_history.append(
                         {
@@ -259,7 +291,7 @@ class JarvisBrain:
             raise
 
     def think(self, user_input: str) -> str:
-        """Processa a entrada do usuário, acionando fallback para Groq se o Gemini falhar por cota (429) ou sobrecarga (503)."""
+        """Processa a entrada do usuário, acionando fallback e registrando exceções em arquivo de log."""
         try:
             if self.provider == "gemini":
                 try:
@@ -269,25 +301,24 @@ class JarvisBrain:
                         code in str(e) for code in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
                     )
                     if should_fallback and self.groq_client:
-                        print(f"  [SISTEMA -> FALLBACK]: Gemini indisponível ou sem cota. Alternando para Groq ({self.groq_model})...")
+                        logger.warning("Failover acionado (Gemini -> Groq/%s): %s", self.groq_model, e)
+                        print(f"  [SISTEMA -> FALLBACK]: Alternando para Groq ({self.groq_model})...")
                         return self._think_groq(user_input)
                     raise
 
             return self._think_groq(user_input)
 
         except Exception as e:
-            err_str = str(e)
-            if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
-                return "Senhor, atingimos o limite diário de requisições da API gratuita. Configure uma chave gratuita do Groq no .env ou aguarde a renovação da cota."
-            if "503" in err_str or "UNAVAILABLE" in err_str:
-                return "Senhor, os servidores neurais estão sobrecarregados no momento. Tente novamente em alguns segundos."
-            return f"Desculpe, encontrei uma falha na comunicação neural: {e}"
+            logger.error("Falha na comunicação neural (provedor=%s): %s", self.provider, e, exc_info=True)
+            return self._format_clean_error(e)
 
     def reset_memory(self) -> None:
         """Reinicia o histórico da conversa atual."""
+        logger.info("Memória de curto prazo reiniciada pelo usuário.")
         self._initialize_provider()
 
     def close(self) -> None:
         """Encerra o pool de conexões HTTP com segurança ao finalizar."""
         if self.gemini_client and hasattr(self.gemini_client, "close"):
             self.gemini_client.close()
+        logger.info("Sessão do JarvisBrain encerrada.")

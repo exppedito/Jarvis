@@ -16,3 +16,6 @@ temp_audio/
 
 # Configurações locais de IDE
 .vscode/
+
+# Logs locais
+logs/
