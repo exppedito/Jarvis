@@ -13,7 +13,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 * **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API, enquanto a transcrição de voz roda localmente em CPU (`Faster-Whisper INT8` em memória), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
 * **Alta Disponibilidade Multi-Provider & Baixa Latência:** Comunicação protegida por *Retry com Exponential Backoff*, `thinking_budget=0` no Gemini Flash, janela deslizante de histórico (*Sliding Window*), teto enxuto de tokens para voz e alternância automática entre provedores (`Google Gemini` $\rightarrow$ `Groq` com descoberta dinâmica de modelos ativos).
 * **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas (`config/permissions.json`) com invocação de processos via `shell=False`.
-* **Observabilidade, Self-Health & Saída Voice-Ready:** Rastreamentos técnicos são isolados em log rotativo (`logs/jarvis.log`), o assistente monitora sua própria saúde operacional e executa coletas de telemetria em segundo plano sem bloquear a interação.
+* **Observabilidade, Self-Health & Áudio Calibrado:** Rastreamentos técnicos são isolados em log rotativo (`logs/jarvis.log`), o assistente monitora sua própria saúde operacional, executa coletas de telemetria em segundo plano e aplica pós-processamento acústico em memória via FFmpeg.
 
 ---
 
@@ -41,7 +41,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
                     ▼
           [Retorno estruturado para o LLM] ───────────────────────────────┐
                                                                           ▼
-                                                           [5. TTS Neural (Edge-TTS + Pygame)]
+                                               [5. TTS Neural + Filtro Acústico (FFmpeg)]
                                                                           │
                                                                           ▼
                                                               [Resposta em Áudio/Texto]
@@ -56,7 +56,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 | **Linguagem** | Python 3.12 | Orquestração geral, assincronismo e integração com o SO. |
 | **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`, `thinking_budget=0`) + Groq | Processamento de linguagem natural de baixa latência, janela deslizante de memória e failover dinâmico. |
 | **Ouvidos (STT)** | Faster-Whisper (`int8`) + `sounddevice` + `numpy` | Captura de microfone e transcrição local em CPU direto da RAM (*Zero-Disk I/O*) com filtro VAD. |
-| **Voz (TTS)** | Edge-TTS + `pygame` | Síntese de voz neural em português (`pt-BR-AntonioNeural`) e reprodução local sem chave de API. |
+| **Voz (TTS)** | Edge-TTS + `FFmpeg` (Pipe DSP) + `pygame` | Síntese neural em português, equalização acústica em memória, modo `--audition` e reprodução local. |
 | **Telemetria & Monitoramento** | `psutil`, `threading`, `subprocess` | Telemetria instantânea, daemon de monitoramento em background, *self-health* e launcher seguro. |
 | **Observabilidade & Config** | `logging` (RotatingFileHandler), `python-dotenv`, `PyYAML`, JSON | Isolamento de logs técnicos, métricas de latência, credenciais, personalidade e regras de permissão. |
 
@@ -97,7 +97,7 @@ Jarvis/
     ├── voice/
     │   ├── __init__.py
     │   ├── listener.py      # Captura de microfone e transcrição STT em RAM (Faster-Whisper)
-    │   └── speaker.py       # Síntese e reprodução de áudio TTS (Edge-TTS + Pygame)
+    │   └── speaker.py       # Síntese TTS, filtro acústico FFmpeg em memória e CLI --audition
     └── tools/
         ├── __init__.py
         ├── registry.py      # Definição e despacho seguro das ferramentas expostas ao LLM
@@ -112,7 +112,7 @@ Jarvis/
 
 ### 1. Pré-requisitos
 * **Python 3.11+** instalado e adicionado ao `PATH`.
-* **FFmpeg** instalado no sistema operacional (necessário para manipulação de áudio).
+* **FFmpeg** instalado no sistema operacional (necessário para manipulação e filtragem de áudio).
 * Microfone e saída de áudio ativos (para o modo voz).
 * Uma chave de API gratuita do [Google AI Studio](https://aistudio.google.com/) e/ou [Groq Cloud](https://console.groq.com/).
 
@@ -141,12 +141,19 @@ LLM_PROVIDER=gemini
 GEMINI_API_KEY=sua_chave_aqui
 GROQ_API_KEY=sua_chave_opcional_de_fallback_aqui
 TTS_VOICE=pt-BR-AntonioNeural
+TTS_RATE=-8%
+TTS_PITCH=-13Hz
+TTS_TIMBRE=jarvis
 WHISPER_MODEL=base
 ```
 
 ### 4. Execução
 ```bash
+# Iniciar o assistente (modo voz ou texto)
 python -m src.main
+
+# Testar e comparar perfis vocais no terminal
+python -m src.voice.speaker --audition
 ```
 
 ---
@@ -160,6 +167,8 @@ python -m src.main
 - [x] **Side-Task 01:** Isolamento de stack traces em log rotativo (`logs/jarvis.log`) e sanitização de mensagens de erro na interface.
 - [x] **Side-Task 02:** Monitoramento autônomo em segundo plano (picos, quedas e processos ofensores) e telemetria interna (*self-health*) do assistente.
 - [x] **Side-Task 03:** Otimização de latência (`thinking_budget=0`, janela deslizante de histórico, teto de tokens e telemetria de tempo de resposta).
+- [x] **Side-Task 04:** Calibração acústica provisória via FFmpeg (`TTS_TIMBRE=jarvis`) e CLI de audição comparativa (`--audition`).
+- [ ] **v2.0 (Próxima Evolução):** Síntese vocal customizada / clonagem de timbre brasileiro fiel do J.A.R.V.I.S. (via RVC ou Piper TTS local).
 
 ---
 
