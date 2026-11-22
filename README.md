@@ -11,7 +11,7 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 ### Pilares da Arquitetura
 * **Custo Zero (100% Gratuito):** Utiliza tiers gratuitos de APIs de inferência em nuvem combinados com processamento local leve de áudio.
 * **Arquitetura Híbrida (Low-RAM Footprint):** O raciocínio pesado é delegado para LLMs via API, enquanto a transcrição de voz roda localmente em CPU (`Faster-Whisper INT8` em memória), mantendo a GPU local livre e o consumo de RAM abaixo de 600 MB.
-* **Alta Disponibilidade Multi-Provider (Failover Automático):** Comunicação protegida por *Retry com Exponential Backoff*, gerenciamento explícito de histórico com *rollback* e alternância automática entre provedores (`Google Gemini` $\rightarrow$ `Groq` com descoberta dinâmica de modelos ativos) em caso de esgotamento de cota (`429`) ou sobrecarga (`503`).
+* **Alta Disponibilidade Multi-Provider & Baixa Latência:** Comunicação protegida por *Retry com Exponential Backoff*, `thinking_budget=0` no Gemini Flash, janela deslizante de histórico (*Sliding Window*), teto enxuto de tokens para voz e alternância automática entre provedores (`Google Gemini` $\rightarrow$ `Groq` com descoberta dinâmica de modelos ativos).
 * **Segurança por Design (Whitelist):** O modelo de linguagem **nunca** possui acesso direto ao terminal (`CMD`/`Bash`). Toda ação no sistema passa por uma camada de validação baseada em permissões explícitas (`config/permissions.json`) com invocação de processos via `shell=False`.
 * **Observabilidade, Self-Health & Saída Voice-Ready:** Rastreamentos técnicos são isolados em log rotativo (`logs/jarvis.log`), o assistente monitora sua própria saúde operacional e executa coletas de telemetria em segundo plano sem bloquear a interação.
 
@@ -26,10 +26,10 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 [1. STT Local (Faster-Whisper INT8 / RAM)] ──► Transcrição rápida em PT-BR
           │
           ▼
-[2. Cérebro (Gemini ──(429/503 Fallback)──► Groq Dinâmico + Memória)]
-          │                                         │
-          ├──► (Apenas diálogo) ────────────────────┼──► [logs/jarvis.log + Metrics]
-          │                                         │
+[2. Cérebro Low-Latency (Gemini [budget=0] ──(429/503 Fallback)──► Groq + Sliding Window)]
+          │                                                               │
+          ├──► (Apenas diálogo) ──────────────────────────────────────────┼──► [logs/jarvis.log + Latency Metrics]
+          │                                                               │
           └──► (Intenção de ação via Function Calling)
                     │
                     ▼
@@ -39,12 +39,12 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
           [4. Execução Isolada (Tools + Monitor Daemon)]
                     │
                     ▼
-          [Retorno estruturado para o LLM] ─────────┐
-                                                    ▼
-                                     [5. TTS Neural (Edge-TTS + Pygame)]
-                                                    │
-                                                    ▼
-                                        [Resposta em Áudio/Texto]
+          [Retorno estruturado para o LLM] ───────────────────────────────┐
+                                                                          ▼
+                                                           [5. TTS Neural (Edge-TTS + Pygame)]
+                                                                          │
+                                                                          ▼
+                                                              [Resposta em Áudio/Texto]
 ```
 
 ---
@@ -54,11 +54,11 @@ Construir um assistente de voz e texto fluido, dotado de personalidade própria 
 | Camada | Tecnologia | Papel no Sistema |
 | :--- | :--- | :--- |
 | **Linguagem** | Python 3.12 | Orquestração geral, assincronismo e integração com o SO. |
-| **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`) + Groq (Failover dinâmico) | Processamento de linguagem natural, memória contextual, *Function Calling* e contingência automática. |
+| **Cérebro (LLM)** | Google Gemini (`gemini-3.8-flash`, `thinking_budget=0`) + Groq | Processamento de linguagem natural de baixa latência, janela deslizante de memória e failover dinâmico. |
 | **Ouvidos (STT)** | Faster-Whisper (`int8`) + `sounddevice` + `numpy` | Captura de microfone e transcrição local em CPU direto da RAM (*Zero-Disk I/O*) com filtro VAD. |
 | **Voz (TTS)** | Edge-TTS + `pygame` | Síntese de voz neural em português (`pt-BR-AntonioNeural`) e reprodução local sem chave de API. |
 | **Telemetria & Monitoramento** | `psutil`, `threading`, `subprocess` | Telemetria instantânea, daemon de monitoramento em background, *self-health* e launcher seguro. |
-| **Observabilidade & Config** | `logging` (RotatingFileHandler), `python-dotenv`, `PyYAML`, JSON | Isolamento de logs técnicos, métricas internas, credenciais, personalidade e regras de permissão. |
+| **Observabilidade & Config** | `logging` (RotatingFileHandler), `python-dotenv`, `PyYAML`, JSON | Isolamento de logs técnicos, métricas de latência, credenciais, personalidade e regras de permissão. |
 
 ---
 
@@ -88,7 +88,7 @@ Jarvis/
     ├── __init__.py
     ├── main.py              # Loop principal híbrido (voz + texto) e orquestração
     ├── brain/
-    │   ├── llm_client.py    # Adaptador Gemini/Groq, failover dinâmico, tool calling e memória
+    │   ├── llm_client.py    # Adaptador Gemini/Groq low-latency, sliding window, failover e tool calling
     │   └── prompt.py        # Carregamento dinâmico da personalidade
     ├── utils/
     │   ├── __init__.py
@@ -159,6 +159,7 @@ python -m src.main
 - [x] **Fase 4:** Integração da pipeline de áudio bidirecional (STT local em RAM com Faster-Whisper + TTS neural com Edge-TTS) em modo híbrido voz/texto.
 - [x] **Side-Task 01:** Isolamento de stack traces em log rotativo (`logs/jarvis.log`) e sanitização de mensagens de erro na interface.
 - [x] **Side-Task 02:** Monitoramento autônomo em segundo plano (picos, quedas e processos ofensores) e telemetria interna (*self-health*) do assistente.
+- [x] **Side-Task 03:** Otimização de latência (`thinking_budget=0`, janela deslizante de histórico, teto de tokens e telemetria de tempo de resposta).
 
 ---
 

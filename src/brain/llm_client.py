@@ -11,6 +11,8 @@ from src.utils.metrics import record_llm_call, set_initial_provider
 
 logger = get_logger("jarvis.brain")
 
+MAX_HISTORY_MESSAGES = 14
+
 GROQ_TOOLS_SCHEMA = [
     {
         "type": "function",
@@ -85,11 +87,13 @@ GROQ_TOOLS_SCHEMA = [
 
 
 class JarvisBrain:
-    """Gerencia a comunicação com o LLM, fallback de provedores, personalidade, memória e tool calling."""
+    """Gerencia a comunicação com o LLM, otimização de latência, fallback, memória e tool calling."""
 
     def __init__(self):
         self.provider = os.getenv("LLM_PROVIDER", "gemini").lower().strip()
         self.system_prompt = load_system_prompt()
+        self.max_output_tokens = int(os.getenv("MAX_OUTPUT_TOKENS", "450"))
+        self.thinking_budget = int(os.getenv("GEMINI_THINKING_BUDGET", "0"))
         self.gemini_client = None
         self.gemini_model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
         self.gemini_history: list[types.Content] = []
@@ -157,7 +161,38 @@ class JarvisBrain:
 
         initial_model = self.gemini_model if self.provider == "gemini" else self.groq_model
         set_initial_provider(self.provider, initial_model)
-        logger.info("JarvisBrain inicializado (provedor=%s, groq_model=%s)", self.provider, self.groq_model or "N/A")
+        logger.info(
+            "JarvisBrain inicializado (provedor=%s, thinking_budget=%d, max_tokens=%d, groq_model=%s)",
+            self.provider,
+            self.thinking_budget,
+            self.max_output_tokens,
+            self.groq_model or "N/A",
+        )
+
+    def _trim_gemini_history(self) -> None:
+        """Mantém janela deslizante enxuta sem quebrar pares function_call/function_response."""
+        if len(self.gemini_history) <= MAX_HISTORY_MESSAGES:
+            return
+
+        cut_idx = len(self.gemini_history) - MAX_HISTORY_MESSAGES
+        while cut_idx < len(self.gemini_history):
+            item = self.gemini_history[cut_idx]
+            if item.role == "user" and item.parts and getattr(item.parts[0], "text", None):
+                del self.gemini_history[:cut_idx]
+                return
+            cut_idx += 1
+
+    def _trim_groq_history(self) -> None:
+        """Mantém system prompt + janela deslizante recente sem órfãos de tool_call."""
+        if len(self.groq_history) <= MAX_HISTORY_MESSAGES + 1:
+            return
+
+        cut_idx = len(self.groq_history) - MAX_HISTORY_MESSAGES
+        while cut_idx < len(self.groq_history):
+            if self.groq_history[cut_idx].get("role") == "user":
+                self.groq_history = [self.groq_history[0]] + self.groq_history[cut_idx:]
+                return
+            cut_idx += 1
 
     def _call_with_retry(self, func, max_retries: int = 3):
         """Executa chamadas à API com backoff para falhas transitórias (ignora retry em cota diária esgotada)."""
@@ -201,27 +236,50 @@ class JarvisBrain:
 
         return "Senhor, ocorreu uma falha inesperada na comunicação neural. Os detalhes técnicos foram registrados no log do sistema."
 
+    def _build_gemini_config(self, use_thinking_budget: bool = True) -> types.GenerateContentConfig:
+        kwargs = {
+            "system_instruction": self.system_prompt,
+            "temperature": 0.7,
+            "max_output_tokens": self.max_output_tokens,
+            "tools": AVAILABLE_TOOLS,
+            "automatic_function_calling": types.AutomaticFunctionCallingConfig(disable=True),
+        }
+        if use_thinking_budget:
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=self.thinking_budget)
+        return types.GenerateContentConfig(**kwargs)
+
+    def _generate_gemini_fast(self):
+        """Chama o Gemini com thinking_budget=0 e desativa o parâmetro automaticamente se o modelo não suportar."""
+        try:
+            return self._call_with_retry(
+                lambda: self.gemini_client.models.generate_content(
+                    model=self.gemini_model,
+                    contents=self.gemini_history,
+                    config=self._build_gemini_config(use_thinking_budget=True),
+                )
+            )
+        except Exception as e:
+            err_lower = str(e).lower()
+            if "thinking" in err_lower and ("400" in err_lower or "invalid" in err_lower or "not supported" in err_lower):
+                logger.info("Modelo %s não suporta thinking_budget; executando sem thinking_config.", self.gemini_model)
+                return self._call_with_retry(
+                    lambda: self.gemini_client.models.generate_content(
+                        model=self.gemini_model,
+                        contents=self.gemini_history,
+                        config=self._build_gemini_config(use_thinking_budget=False),
+                    )
+                )
+            raise
+
     def _think_gemini(self, user_input: str) -> str:
+        self._trim_gemini_history()
         checkpoint = len(self.gemini_history)
         self.gemini_history.append(
             types.Content(role="user", parts=[types.Part(text=user_input)])
         )
 
-        config = types.GenerateContentConfig(
-            system_instruction=self.system_prompt,
-            temperature=0.7,
-            tools=AVAILABLE_TOOLS,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        )
-
         try:
-            response = self._call_with_retry(
-                lambda: self.gemini_client.models.generate_content(
-                    model=self.gemini_model,
-                    contents=self.gemini_history,
-                    config=config,
-                )
-            )
+            response = self._generate_gemini_fast()
 
             while response.function_calls:
                 model_content = response.candidates[0].content
@@ -244,13 +302,7 @@ class JarvisBrain:
                     types.Content(role="user", parts=tool_response_parts)
                 )
 
-                response = self._call_with_retry(
-                    lambda: self.gemini_client.models.generate_content(
-                        model=self.gemini_model,
-                        contents=self.gemini_history,
-                        config=config,
-                    )
-                )
+                response = self._generate_gemini_fast()
 
             reply = (response.text or "").strip()
             self.gemini_history.append(
@@ -263,6 +315,7 @@ class JarvisBrain:
             raise
 
     def _think_groq(self, user_input: str) -> str:
+        self._trim_groq_history()
         checkpoint = len(self.groq_history)
         self.groq_history.append({"role": "user", "content": user_input})
 
@@ -274,6 +327,7 @@ class JarvisBrain:
                     tools=GROQ_TOOLS_SCHEMA,
                     tool_choice="auto",
                     temperature=0.7,
+                    max_tokens=self.max_output_tokens,
                 )
             )
 
@@ -317,6 +371,7 @@ class JarvisBrain:
                         tools=GROQ_TOOLS_SCHEMA,
                         tool_choice="auto",
                         temperature=0.7,
+                        max_tokens=self.max_output_tokens,
                     )
                 )
                 message = completion.choices[0].message
@@ -330,7 +385,7 @@ class JarvisBrain:
             raise
 
     def think(self, user_input: str) -> str:
-        """Processa a entrada do usuário, acionando fallback e registrando métricas de latência e saúde."""
+        """Processa a entrada do usuário, mede latência em tempo real e aciona fallback se necessário."""
         start_time = time.perf_counter()
         try:
             if self.provider == "gemini":
@@ -338,6 +393,7 @@ class JarvisBrain:
                     reply = self._think_gemini(user_input)
                     latency_ms = (time.perf_counter() - start_time) * 1000
                     record_llm_call("gemini", self.gemini_model, latency_ms, used_fallback=False, failed=False)
+                    print(f"  [LATÊNCIA]: {latency_ms:.0f} ms (GEMINI / {self.gemini_model})")
                     return reply
                 except Exception as e:
                     should_fallback = any(
@@ -346,15 +402,18 @@ class JarvisBrain:
                     if should_fallback and self.groq_client:
                         logger.warning("Failover acionado (Gemini -> Groq/%s): %s", self.groq_model, e)
                         print(f"  [SISTEMA -> FALLBACK]: Alternando para Groq ({self.groq_model})...")
+                        fallback_start = time.perf_counter()
                         reply = self._think_groq(user_input)
-                        latency_ms = (time.perf_counter() - start_time) * 1000
+                        latency_ms = (time.perf_counter() - fallback_start) * 1000
                         record_llm_call("groq", self.groq_model, latency_ms, used_fallback=True, failed=False)
+                        print(f"  [LATÊNCIA]: {latency_ms:.0f} ms (GROQ / {self.groq_model})")
                         return reply
                     raise
 
             reply = self._think_groq(user_input)
             latency_ms = (time.perf_counter() - start_time) * 1000
             record_llm_call("groq", self.groq_model, latency_ms, used_fallback=False, failed=False)
+            print(f"  [LATÊNCIA]: {latency_ms:.0f} ms (GROQ / {self.groq_model})")
             return reply
 
         except Exception as e:
