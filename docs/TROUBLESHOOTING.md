@@ -46,3 +46,21 @@ Registro cronológico dos incidentes técnicos encontrados durante o desenvolvim
 * **Por que aconteceu (Causa Raiz):** O identificador do modelo secundário estava fixo (*hardcoded*) no código-fonte, tornando o caminho de contingência vulnerável ao ciclo de descontinuação de modelos da API do Groq.
 * **Como foi sanado:** Implementamos o método `_resolve_groq_model()` em `JarvisBrain`, que consulta dinamicamente o endpoint `groq_client.models.list()` na inicialização, descarta modelos especializados não conversacionais (`whisper`, `tts`, `guard`, `embed`) e seleciona automaticamente o modelo ativo prioritário disponível na conta (ou respeita `GROQ_MODEL` no `.env`).
 * **Validação e Justificativa Técnica:** No teste de validação (`python -m src.main`), ao solicitar *"Abra o editor de registros do windows"*, o sistema detectou o limite de cota do Gemini, alternou automaticamente para o modelo ativo `qwen/qwen3.8-27b` no Groq, executou `open_application({"app_name": "regedit"})`, bloqueou o acesso via whitelist e respondeu em linguagem natural listando todos os 7 aplicativos e links autorizados. A descoberta dinâmica de modelos elimina manutenção manual por *deprecation* e assegura resiliência real no failover.
+
+---
+
+## Incidente 06 — Incompatibilidade de Assinatura na Decodificação de Áudio (`TypeError: open() got an unexpected keyword argument 'metadata_errors'`)
+
+* **O Problema:** Na primeira execução do modo de voz (`src/voice/listener.py`), o sintetizador de saída (`Edge-TTS`) funcionou normalmente, mas a captura do microfone falhava na etapa de transcrição com `[ERRO STT]: Falha na transcrição (open() got an unexpected keyword argument 'metadata_errors')`.
+* **Por que aconteceu (Causa Raiz):** Ao passar o caminho de um arquivo `.wav` em disco para `WhisperModel.transcribe(tmp_path)`, o `faster-whisper` invoca internamente a biblioteca `PyAV` (`av.open(..., metadata_errors="ignore")`). Versões recentes do `PyAV` no Python 3.12 removeram o argumento `metadata_errors` da assinatura de `av.open()`, quebrando a leitura de arquivos de áudio intermediários.
+* **Como foi sanado:** Eliminamos o uso de arquivos `.wav` temporários e convertemos os frames capturados pelo `sounddevice` (`int16`) diretamente em um vetor NumPy 1D `float32` normalizado (`[-1.0, 1.0]`) na memória RAM, passando o array diretamente para `self.model.transcribe(audio_float32, ...)` com verificação prévia de nível RMS.
+* **Validação e Justificativa Técnica:** Nos testes subsequentes, o `faster-whisper` transcreveu a fala em português instantaneamente (`Você (voz): ...`). Processar o áudio 100% em RAM (*Zero-Disk I/O*) não apenas contorna a dependência do decodificador externo `PyAV`, como também reduz a latência de transcrição e evita operações desnecessárias de escrita/exclusão no SSD.
+
+---
+
+## Incidente 07 — Failover Não Acionado em Sobrecarga (`503 UNAVAILABLE`) do Provedor Primário
+
+* **O Problema:** Após validar a transcrição de voz no Incidente 06, a requisição falada ao Gemini sofreu sobrecarga (`503 UNAVAILABLE`) e o assistente respondeu que os servidores neurais estavam sobrecarregados em vez de alternar para o Groq.
+* **Por que aconteceu (Causa Raiz):** O bloco de contingência em `JarvisBrain.think()` verificava apenas códigos de esgotamento de cota (`429` / `RESOURCE_EXHAUSTED`), não incluindo códigos de indisponibilidade/sobrecarga (`503` / `UNAVAILABLE`) como gatilho de failover.
+* **Como foi sanado:** Expandimos a verificação `should_fallback` em `src/brain/llm_client.py` para acionar o provedor secundário (`Groq`) tanto em erros `429`/`RESOURCE_EXHAUSTED` quanto em erros `503`/`UNAVAILABLE` após as retentativas locais.
+* **Validação e Justificativa Técnica:** Nos testes ponta a ponta por voz, quando o provedor primário apresentou sobrecarga, o sistema comutou automaticamente para o Groq, executou as ferramentas solicitadas e sintetizou a resposta em áudio sem interrupção. Tratar tanto erros de cota quanto de disponibilidade garante resiliência real em arquiteturas multi-provider.

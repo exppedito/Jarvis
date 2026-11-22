@@ -259,14 +259,17 @@ class JarvisBrain:
             raise
 
     def think(self, user_input: str) -> str:
-        """Processa a entrada do usuário, acionando fallback para Groq se o Gemini atingir cota 429."""
+        """Processa a entrada do usuário, acionando fallback para Groq se o Gemini falhar por cota (429) ou sobrecarga (503)."""
         try:
             if self.provider == "gemini":
                 try:
                     return self._think_gemini(user_input)
                 except Exception as e:
-                    if ("429" in str(e) or "RESOURCE_EXHAUSTED" in str(e)) and self.groq_client:
-                        print(f"  [SISTEMA -> FALLBACK]: Cota do Gemini atingida. Alternando para Groq ({self.groq_model})...")
+                    should_fallback = any(
+                        code in str(e) for code in ("429", "RESOURCE_EXHAUSTED", "503", "UNAVAILABLE")
+                    )
+                    if should_fallback and self.groq_client:
+                        print(f"  [SISTEMA -> FALLBACK]: Gemini indisponível ou sem cota. Alternando para Groq ({self.groq_model})...")
                         return self._think_groq(user_input)
                     raise
 
